@@ -67,9 +67,11 @@ En el servidor queda así:
 | `/etc/systemd/system/plan-virtualizacion.service` | Servicio (`sudo systemctl status plan-virtualizacion`). |
 | `/etc/nginx/snippets/plan-virtualizacion.conf` | Proxy de `/plan-virtualizacion/` hacia `127.0.0.1:5180`. |
 
-El script agrega `include snippets/plan-virtualizacion.conf;` al `server{}` de Nginx que sirve `/var/www/html` (guarda copia en `/var/backups/plan-virtualizacion-nginx/` y la restaura si `nginx -t` falla). Si la nueva versión no responde, vuelve sola a la anterior.
+El script agrega `include snippets/plan-virtualizacion.conf;` al `server{}` HTTPS de `n8n.americana.edu.co` (variable `DOMAIN` en `deploy/instalar.sh`), igual que recorridos y admisiones. Guarda copia en `/var/backups/plan-virtualizacion-nginx/` y la restaura si `nginx -t` falla o si la plataforma no responde a través de Nginx. Si la nueva versión de la app no responde, vuelve sola a la anterior.
 
-La plataforma queda en `https://<dominio>/plan-virtualizacion/`.
+La plataforma queda en **https://n8n.americana.edu.co/plan-virtualizacion/**.
+
+> Comparte dominio con n8n: quien pueda publicar páginas en `n8n.americana.edu.co` (por ejemplo, respuestas HTML de webhooks) tiene el mismo origen que la plataforma. Para aislarla del todo, basta con darle un subdominio propio y cambiar `DOMAIN`.
 
 Registros: `sudo journalctl -u plan-virtualizacion -f`. Bitácora: `sudo tail -f /var/lib/plan-virtualizacion/audit.log`.
 

@@ -7,10 +7,12 @@
 #   /opt/plan-virtualizacion            versión nueva en preparación y la anterior (para volver atrás)
 #
 # Es idempotente: se puede correr las veces que haga falta. No toca los otros sitios de
-# /var/www/html; en Nginx solo agrega una línea include al server{} que sirve esa carpeta.
+# /var/www/html; en Nginx solo agrega una línea include al server{} HTTPS de $DOMAIN
+# (la plataforma queda en https://$DOMAIN/plan-virtualizacion/).
 set -euo pipefail
 
 APP=plan-virtualizacion
+DOMAIN=n8n.americana.edu.co
 APP_DIR=/var/www/html/$APP
 DATA_DIR=/var/lib/$APP
 STAGE_DIR=/opt/$APP
@@ -91,37 +93,82 @@ if ! healthy; then
 fi
 log "La aplicación responde en 127.0.0.1:$PORT$PATH_BASE"
 
-log "Nginx"
+log "Nginx ($DOMAIN$PATH_BASE/)"
 install -d -m 755 /etc/nginx/snippets
 install -m 644 "$HERE/nginx-plan-virtualizacion.conf" "$SNIPPET"
-# Archivos de sitios activos cuyo server{} sirve /var/www/html (se siguen los enlaces de sites-enabled).
-mapfile -t CONFS < <(grep -RlE '^[[:space:]]*root[[:space:]]+/var/www/html/?[[:space:]]*;' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | xargs -r -n1 readlink -f | sort -u)
+
+# Agrega "include snippets/plan-virtualizacion.conf;" justo después de server_name en cada
+# server{} que escucha en 443 y atiende $DOMAIN (igual que se incluyen recorridos y admisiones).
+add_include() {
+  awk -v dom="$DOMAIN" -v inc="include snippets/$APP.conf;" '
+    function code(s) { sub(/#.*/, "", s); return s }
+    function opens(s) { return gsub(/\{/, "{", s) }
+    function closes(s) { return gsub(/\}/, "}", s) }
+    BEGIN { gsub(/\./, "\\.", dom); name = "server_name[^;]*[ 	]" dom "[[:space:];]" }
+    NR == FNR {
+      l = code($0)
+      if (depth == 0 && l ~ /^[ 	]*server[ 	]*\{/) blk++
+      if (depth >= 1 && l ~ /listen[ 	]+([^;]*:)?443[[:space:];]/) ssl[blk] = 1
+      if (depth >= 1 && (l " ") ~ name) named[blk] = 1
+      depth += opens(l) - closes(l)
+      next
+    }
+    FNR == 1 { depth = 0; blk = 0 }
+    {
+      l = code($0)
+      if (depth == 0 && l ~ /^[ 	]*server[ 	]*\{/) blk++
+      print
+      if (depth >= 1 && ssl[blk] && named[blk] && !done[blk] && (l " ") ~ name) {
+        match($0, /^[ 	]*/)
+        print substr($0, 1, RLENGTH) inc
+        done[blk] = 1
+      }
+      depth += opens(l) - closes(l)
+    }' "$1" "$1"
+}
+
+mapfile -t CONFS < <(grep -RlE "server_name[^;]*[[:space:]]${DOMAIN//./\\.}[[:space:];]" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | xargs -r -n1 readlink -f | sort -u)
+[ ${#CONFS[@]} -gt 0 ] || die "no encontré ningún sitio de Nginx con server_name $DOMAIN"
 BACKUP_DIR=/var/backups/$APP-nginx/$TS
 CHANGED=()
 for f in "${CONFS[@]}"; do
   grep -q "snippets/$APP.conf" "$f" && continue
   install -d -m 700 "$BACKUP_DIR"
   cp -p "$f" "$BACKUP_DIR/$(basename "$f")"
-  sed -i -E "s#^([[:space:]]*)root[[:space:]]+/var/www/html/?[[:space:]]*;.*#&\n\1include snippets/$APP.conf;#" "$f"
+  add_include "$f" > "$f.$APP.tmp"
+  if cmp -s "$f" "$f.$APP.tmp"; then rm -f "$f.$APP.tmp"; continue; fi
+  cat "$f.$APP.tmp" > "$f" && rm -f "$f.$APP.tmp"
   CHANGED+=("$f")
 done
+grep -qs "snippets/$APP.conf" "${CONFS[@]}" || die "no encontré el server{} HTTPS (listen 443) de $DOMAIN para enlazar la plataforma"
+
+restore_nginx() {
+  for f in "${CHANGED[@]}"; do cat "$BACKUP_DIR/$(basename "$f")" > "$f"; done
+  nginx -t 2>/dev/null && systemctl reload nginx
+}
 if ! nginx -t 2>/tmp/$APP-nginx-test.log; then
   cat /tmp/$APP-nginx-test.log >&2
-  for f in "${CHANGED[@]}"; do cp -p "$BACKUP_DIR/$(basename "$f")" "$f"; done
+  restore_nginx
   die "la configuración de Nginx no es válida; se restauraron los archivos originales"
 fi
 systemctl reload nginx
-if [ ${#CONFS[@]} -eq 0 ]; then
-  echo "AVISO: no encontré un server{} de Nginx con 'root /var/www/html;'." >&2
-  echo "       Agrega dentro del server{} de tu dominio la línea:  include snippets/$APP.conf;" >&2
-  echo "       y luego: sudo nginx -t && sudo systemctl reload nginx" >&2
-else
-  log "Nginx enlazado en: ${CONFS[*]}${CHANGED:+ (modificados; copia en $BACKUP_DIR)}"
+[ ${#CHANGED[@]} -gt 0 ] && log "Nginx enlazado en ${CHANGED[*]} (copia del original en $BACKUP_DIR)"
+
+# Prueba de punta a punta: Nginx (HTTPS) → aplicación.
+ok=""
+for _ in $(seq 1 10); do
+  if curl -fsSk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN$PATH_BASE/api/health" >/dev/null 2>&1; then ok=1; break; fi
+  sleep 1
+done
+if [ -z "$ok" ]; then
+  restore_nginx
+  die "https://$DOMAIN$PATH_BASE/ no respondió a través de Nginx; se restauró la configuración original"
 fi
+log "Responde en https://$DOMAIN$PATH_BASE/"
 
 rm -rf "$STAGE_DIR/new"
 if [ -f "$DATA_DIR/ADMIN-INICIAL.txt" ]; then
   log "Primer ingreso: usuario 'admin'. La contraseña inicial está en el servidor:"
   log "    sudo cat $DATA_DIR/ADMIN-INICIAL.txt"
 fi
-log "Despliegue terminado: https://<tu-dominio>$PATH_BASE/"
+log "Despliegue terminado: https://$DOMAIN$PATH_BASE/"
