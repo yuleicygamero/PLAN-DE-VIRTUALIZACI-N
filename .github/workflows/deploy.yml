@@ -1,0 +1,99 @@
+# Compila la plataforma y la publica en el servidor (/var/www/html/plan-virtualizacion)
+# cada vez que se sube un cambio a main. También se puede lanzar a mano desde Actions.
+#
+# Secretos del repositorio que usa: SSH_HOST, SSH_PORT, SSH_USER, SSH_PRIVATE_KEY.
+# SSH_USER debe poder usar sudo sin contraseña. El repositorio es público: los registros de
+# Actions también lo son, por eso aquí nunca se imprimen contraseñas ni datos del servidor.
+name: Desplegar en el servidor
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: despliegue-produccion
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Compilar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Interfaz (React)
+        working-directory: frontend
+        env:
+          VITE_BASE: /plan-virtualizacion/
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=high
+          npm run build
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: API (.NET 8 autocontenida para Linux x64)
+        run: dotnet publish backend/PlanVirtualizacion.Api/PlanVirtualizacion.Api.csproj -c Release -r linux-x64 --self-contained true -o publish
+
+      - name: Empaquetar
+        run: |
+          rm -f publish/appsettings.Development.json
+          test -f publish/wwwroot/index.html
+          test -f publish/Seed/seed.json
+          tar -czf plan-virtualizacion.tgz -C publish .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paquete
+          path: |
+            plan-virtualizacion.tgz
+            deploy/
+          retention-days: 7
+
+  deploy:
+    name: Desplegar
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: paquete
+
+      - name: Preparar SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" > ~/.ssh/known_hosts 2>/dev/null
+          test -s ~/.ssh/known_hosts
+
+      - name: Copiar e instalar
+        run: |
+          OPTS=(-i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          TARGET="$SSH_USER@$SSH_HOST"
+          REMOTE=$(ssh "${OPTS[@]}" -p "${SSH_PORT:-22}" "$TARGET" 'mktemp -d /tmp/plan-virtualizacion-XXXXXX')
+          scp "${OPTS[@]}" -P "${SSH_PORT:-22}" -r plan-virtualizacion.tgz deploy "$TARGET:$REMOTE/"
+          ssh "${OPTS[@]}" -p "${SSH_PORT:-22}" "$TARGET" \
+            "sudo -n bash $REMOTE/deploy/instalar.sh $REMOTE/plan-virtualizacion.tgz; rc=\$?; rm -rf $REMOTE; exit \$rc"
+
+      - name: Borrar la clave
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

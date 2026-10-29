@@ -1,12 +1,13 @@
 /*
  * Motor de la plataforma Plan de Virtualización.
- * Renderiza las vistas dentro de los contenedores que monta <App/> y usa
- * window.claude.use('db') → cliente de la API .NET (src/api/db.js).
+ * Renderiza las vistas dentro de los contenedores que monta <App/> con los servicios
+ * que recibe: db (cliente de la API .NET, src/api/db.js), downloads y canWrite
+ * (false para usuarios de solo lectura).
  */
 import * as XLSX from 'xlsx';
 
 let started = false;
-export function startPlan() {
+export function startPlan({ db, downloads, canWrite }) {
   if (started) return;
   started = true;
 const LEVELS=[
@@ -15,7 +16,6 @@ const LEVELS=[
  {id:'maestria',name:'Maestrías',short:'MAE',vias:['reestructuracion','cero','por_definir'],def:'reestructuracion',color:'var(--l-mae)'},
  {id:'doctorado',name:'Doctorado',short:'DOC',vias:['por_definir','reestructuracion','cero'],def:'por_definir',color:'var(--l-doc)'},
  {id:'distancia',name:'A distancia',short:'DIS',vias:['por_definir','virtual','cero','reestructuracion'],def:'por_definir',color:'var(--l-dis)'}];
-const colOf=(lv,sem)=>`cs-${lv}-${sem}`;
 const LV=Object.fromEntries(LEVELS.map(l=>[l.id,l]));
 const VIAS={por_definir:'Sin definir',reestructuracion:'Reestructuración',cero:'Desde cero',virtual:'Tomada de virtual'};
 const VIA_COLOR={reestructuracion:'var(--l-mae)',cero:'var(--l-pre)',virtual:'var(--l-dis)',por_definir:'var(--st-no)'};
@@ -25,7 +25,7 @@ const MONTHS=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov',
 
 const S={db:null,dl:null,loaded:{programs:false},programs:new Map(),courses:new Map(),
   tab:'resumen',prog:null,lvlFilter:'all',search:'',sel:new Set(),editing:null,editVal:'',confirmDel:null,
-  addVals:{},syncTC:true,tcFilter:'',canWrite:true,deferred:false};
+  addVals:{},tcFilter:'',canWrite:canWrite!==false,deferred:false};
 
 /* ---------- utils ---------- */
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -67,16 +67,7 @@ const progsByLevel=(lv,all)=>[...S.programs.values()].filter(p=>p.level===lv&&!p
 const escalaProgs=()=>[...S.programs.values()].filter(p=>p.escala||p.escalaOnly).sort((a,b)=>a.name.localeCompare(b.name,'es'));
 const visProgs=()=>[...S.programs.values()].filter(p=>!p.hidden&&!p.escalaOnly);
 const isVis=c=>{const p=S.programs.get(c.programId);return !!p&&!p.hidden&&!p.escalaOnly};
-function semestersOf(p,list){const set=new Set();for(let i=1;i<=(p.semesters||0);i++)set.add(i);(list||coursesOf(p.id)).forEach(c=>set.add(c.semester||1));return [...set].sort((a,b)=>a-b)}
-function semState(p,sem,cnt){
-  const pl=(p.plan||{})[sem]||{}; const t=today(); const s=pd(pl.start),e=pd(pl.end);
-  if(cnt.total&&cnt.virtualizado===cnt.total) return {cls:'done',txt:'Completo'};
-  if(!s) return {cls:'none',txt:'Sin programar'};
-  if(e&&e<t) return {cls:'late',txt:'Atrasado'};
-  if(s<=t) return {cls:'now',txt:'En producción'};
-  const d=days(t,s); return {cls:'soon',txt:d===0?'Inicia hoy':`Inicia en ${d} d`};
-}
-
+function semestersOf(p,list){const set=new Set();for(let i=1;i<=(+p.semesters||0);i++)set.add(i);(list||coursesOf(p.id)).forEach(c=>set.add(+c.semester||1));return [...set].sort((a,b)=>a-b)}
 /* ---------- render ---------- */
 let rq=0;
 function schedule(){if(rq)return;rq=requestAnimationFrame(()=>{rq=0;render()})}
@@ -176,16 +167,16 @@ function vProgramas(D){
       <div class="fact"><b style="color:var(--st-pro)">${pc.en_proceso}</b><small>en proceso</small></div>
       <div class="fact"><b>${pc.no_iniciado}</b><small>sin iniciar</small></div>
       <div class="fact"><b>${cl.filter(c=>!c.linked&&D.isTC(c)).length}</b><small>tronco común</small></div>${cl.some(c=>c.linked)?`<div class="fact"><b>${cl.filter(c=>!c.linked).length} <span class="muted" style="font-size:13px">+ ${cl.filter(c=>c.linked).length} tomadas</span></b><small>a producir + tomadas de otros programas</small></div>`:''}
-      ${p.expectedTC!=null?`<div class="fact"><b class="muted">${p.expectedDisc} + ${p.expectedTC}</b><small>disciplinar + TC (conteo inicial)</small></div>`:''}
+      ${p.expectedTC!=null?`<div class="fact"><b class="muted">${esc(p.expectedDisc)} + ${esc(p.expectedTC)}</b><small>disciplinar + TC (conteo inicial)</small></div>`:''}
     </div>
     <div class="facts">
-      <label class="field">Semestres<input type="number" min="1" max="12" id="p-sems" value="${p.semesters||''}" placeholder="${sems.length||'—'}" style="width:90px"></label>
+      <label class="field">Semestres<input type="number" min="1" max="12" id="p-sems" value="${esc(p.semesters||'')}" placeholder="${sems.length||'—'}" style="width:90px"></label>
       <label class="field">Vía por defecto<select id="p-via">${L.vias.map(v=>`<option value="${v}" ${p.defaultVia===v?'selected':''}>${VIAS[v]}</option>`).join('')}</select></label>
     </div>
     <div class="facts" style="padding-top:12px;border-top:1px solid var(--line)">
-      <label class="field">Inicio de producción<input type="date" id="p-prod" value="${p.prodStart||''}"></label>
-      <label class="field">Inicio del programa (clases)<input type="date" id="p-class" value="${p.classStart||''}"></label>
-      <label class="field">Semestres a producir<input type="number" min="1" max="14" id="p-nsem" value="${p.semsToProduce||''}" placeholder="${sems.length||'—'}" style="width:110px"></label>
+      <label class="field">Inicio de producción<input type="date" id="p-prod" value="${esc(p.prodStart||'')}"></label>
+      <label class="field">Inicio del programa (clases)<input type="date" id="p-class" value="${esc(p.classStart||'')}"></label>
+      <label class="field">Semestres a producir<input type="number" min="1" max="14" id="p-nsem" value="${esc(p.semsToProduce||'')}" placeholder="${sems.length||'—'}" style="width:110px"></label>
       ${(()=>{const r=progPlan(p);return `<div class="fact" style="align-self:center"><span class="pill ${r.cls}">${r.txt}</span><small style="margin-top:4px">${r.c.virtualizado}/${r.c.total} asignaturas listas de S1 a S${r.n}</small></div>`})()}
     </div></div>`;
   if(!sems.length) body+=`<div class="notice" style="margin-top:14px">Este programa aún no tiene asignaturas. Usa <b>Subir plan de estudios</b> para cargar un Excel o CSV, o pegar el listado; también puedes indicar el número de semestres y agregar asignaturas a mano.</div>`;
@@ -206,7 +197,7 @@ function vProgramas(D){
       const nameCell=S.editing===c.id?`<input id="edit-name" value="${esc(S.editVal)}" aria-label="Nombre de la asignatura">`:`${c.slot?`<span class="slot">${esc(c.slot)}</span>`:''}<span>${esc(c.name)}</span>${c.linked?`<span class="slot" style="background:var(--accent-soft);color:var(--accent)" title="No se contabiliza en el nivel: el avance se toma del programa de origen">Tomada de ${esc(S.programs.get(c.srcPid)?.name||'otro programa')}${c._src?'':' · sin enlace'}</span>`:''}${tc&&!c.linked?`<span class="tc ${others.length?'':'man'}" title="${esc(tip)}">TRONCO COMÚN${others.length?' · '+(others.length+1):''}</span>`:''}`;
       body+=`<tr class="crow" data-id="${c.id}"><td><input type="checkbox" data-sel="${c.id}" ${S.sel.has(c.id)?'checked':''} aria-label="Seleccionar"></td>
       <td><div class="cname">${nameCell}</div></td>
-      <td>${c.linked?'<span class="muted" style="font-size:12px">Tomada de virtual</span>':`<select class="sel via" data-via="${c.id}" data-v="${c.via}" aria-label="Vía">${L.vias.concat(L.vias.includes(c.via)?[]:[c.via]).map(v=>`<option value="${v}" ${c.via===v?'selected':''}>${VIAS[v]}</option>`).join('')}</select>`}</td>
+      <td>${c.linked?'<span class="muted" style="font-size:12px">Tomada de virtual</span>':`<select class="sel via" data-via="${c.id}" data-v="${esc(c.via)}" aria-label="Vía">${L.vias.concat(L.vias.includes(c.via)?[]:[c.via]).map(v=>`<option value="${esc(v)}" ${c.via===v?'selected':''}>${esc(VIAS[v]||v)}</option>`).join('')}</select>`}</td>
       <td><div class="stseg" role="group" aria-label="Estado">${Object.entries(STATUS).map(([k,n])=>`<button data-setst="${c.id}" data-val="${k}" aria-pressed="${c.status===k}" style="--c:${ST_COLOR[k]}">${n}</button>`).join('')}</div></td>
       <td><div class="rowact ${S.editing===c.id||S.confirmDel===c.id?'on':''}">${S.editing===c.id?`<button class="icon-btn" data-save="${c.id}">Guardar</button><button class="icon-btn" data-cancel>Cancelar</button>`:
         S.confirmDel===c.id?`<button class="icon-btn danger" data-del="${c.id}">¿Eliminar?</button><button class="icon-btn" data-cancel>No</button>`:
@@ -262,7 +253,7 @@ function vCrono(D){
 function ganttHtml(sched){
   const t=today();let mn=null,mx=null;sched.forEach(i=>[i.a,i.b].forEach(d=>{if(d){mn=!mn||d<mn?d:mn;mx=!mx||d>mx?d:mx}}));
   let start=new Date(Math.min(+(mn||t),+t));start=new Date(start.getFullYear(),start.getMonth(),1);
-  let end=new Date(Math.max(+(mx||t),+new Date(2026,11,31)));end=new Date(end.getFullYear(),end.getMonth()+1,0);
+  let end=new Date(Math.max(+(mx||t),+new Date(t.getFullYear(),11,31)));end=new Date(end.getFullYear(),end.getMonth()+1,0);
   const span=end-start+864e5;const pos=d=>(d-start)*100/span;
   const months=[];for(let d=new Date(start);d<=end;d=new Date(d.getFullYear(),d.getMonth()+1,1))months.push(new Date(d));
   const grid=months.map(m=>`<div class="g-month" style="left:${pos(m)}%;width:${(new Date(m.getFullYear(),m.getMonth()+1,1)-m)*100/span}%"><span>${MONTHS[m.getMonth()]} ${String(m.getFullYear()).slice(2)}</span></div>`).join('');
@@ -360,9 +351,9 @@ function vInicios(){
   for(const {p,r} of rows){const L=LV[p.level];
     if(p.level!==last){last=p.level;h+=`<tr><td colspan="6" style="background:var(--accent-soft);font-weight:700;font-size:12px">${L.name}</td></tr>`}
     h+=`<tr><td style="min-width:220px"><a href="#" data-open="${p.id}" style="color:inherit;font-weight:600">${esc(p.name)}</a><div class="muted" style="font-size:11.5px">${p.modalidad?esc(p.modalidad)+' · ':''}${semestersOf(p).length} semestres en el plan</div></td>
-    <td><input type="date" class="search-in" style="padding:5px 8px;font-size:12px" data-ifield="${p.id}|prodStart" value="${p.prodStart||''}"></td>
-    <td><input type="date" class="search-in" style="padding:5px 8px;font-size:12px" data-ifield="${p.id}|classStart" value="${p.classStart||''}"></td>
-    <td><input type="number" min="1" max="14" class="search-in" style="padding:5px 8px;font-size:12px;width:80px" data-ifield="${p.id}|semsToProduce" value="${p.semsToProduce||''}" placeholder="${r.n||'—'}"></td>
+    <td><input type="date" class="search-in" style="padding:5px 8px;font-size:12px" data-ifield="${p.id}|prodStart" value="${esc(p.prodStart||'')}"></td>
+    <td><input type="date" class="search-in" style="padding:5px 8px;font-size:12px" data-ifield="${p.id}|classStart" value="${esc(p.classStart||'')}"></td>
+    <td><input type="number" min="1" max="14" class="search-in" style="padding:5px 8px;font-size:12px;width:80px" data-ifield="${p.id}|semsToProduce" value="${esc(p.semsToProduce||'')}" placeholder="${r.n||'—'}"></td>
     <td style="min-width:150px"><div class="prog-bar">${stackBar(r.c,r.c.total)}<span class="num muted" style="font-size:12px;white-space:nowrap">${r.c.virtualizado}/${r.c.total}</span></div></td>
     <td><span class="pill ${r.cls}">${r.txt}</span></td></tr>`}
   return h+`</tbody></table></div></div>`;
@@ -391,24 +382,18 @@ function writeCourses(pid,map){
 }
 async function updMany(ids,patch){
   const by={};const ts=new Date().toISOString();
-  for(const id of ids){const c=S.courses.get(id)||S.removed?.get(id);if(!c)continue;(by[c.programId]=by[c.programId]||{})[id]={...patch,updatedAt:ts}}
+  for(const id of ids){const c=S.courses.get(id);if(!c)continue;(by[c.programId]=by[c.programId]||{})[id]={...patch,updatedAt:ts}}
   await Promise.all(Object.entries(by).map(([pid,m])=>writeCourses(pid,m).catch(fail)));
 }
 const upd=(id,patch)=>updMany([id],patch);
-function ensureSubs(){}
-function fail(e){console.error(e);toast(e&&e.code==='invalid_argument'?'No tienes permiso para editar este plan. Pide acceso de colaborador al propietario.':e&&e.code==='quota_exceeded'?'Se alcanzó el límite de almacenamiento del plan.':'No se pudo guardar el cambio. Inténtalo de nuevo.')}
-function tcSiblings(id){const c=S.courses.get(id);if(!c||!S.syncTC)return [id];const D=derive();return D.isTC(c)?D.keys.get(c.key).ids:[id]}
+const FAIL_MSG={permission_denied:'Tu usuario es de solo lectura: no puede modificar el plan.',invalid_argument:'El servidor rechazó el cambio porque los datos no son válidos.',not_found:'El documento ya no existe. Recarga la página.',rate_limited:'Demasiados cambios seguidos. Espera un momento e inténtalo de nuevo.',unavailable:'No hay conexión con el servidor. El cambio no se guardó.',unauthenticated:'Tu sesión expiró. Vuelve a iniciar sesión.',csrf:'La página quedó desactualizada. Recárgala e inténtalo de nuevo.'};
+function fail(e){console.error(e);toast(FAIL_MSG[e&&e.code]||'No se pudo guardar el cambio. Inténtalo de nuevo.')}
+function tcSiblings(id){const c=S.courses.get(id);if(!c)return [id];const D=derive();return D.isTC(c)?D.keys.get(c.key).ids:[id]}
 async function setField(ids,field,val){
   if(field==='status'||field==='via'){const own=[],extra=[];ids.forEach(id=>{const c=S.courses.get(id);if(c&&c.linked){if(field==='status'){if(c._src)extra.push(...tcSiblings(c._src));else{S.courses.set(id,{...c,ownStatus:val,status:val});updMany([id],{ownStatus:val})}}}else own.push(id)});ids=[...new Set([...own,...extra])];if(!ids.length){schedule();return}}
   const patch={[field]:val}; if(field==='via'&&val==='virtual') patch.status='virtualizado';
   ids.forEach(id=>{const c=S.courses.get(id);if(c)S.courses.set(id,{...c,...patch})}); schedule();
   await updMany(ids,patch);
-}
-async function savePlan(pid,sem,field,val){
-  const p=S.programs.get(pid); const plan=JSON.parse(JSON.stringify(p.plan||{})); plan[sem]={...(plan[sem]||{}),[field]:val};
-  if(field==='start'&&val&&plan[sem].end&&plan[sem].end<val) plan[sem].end='';
-  S.programs.set(pid,{...p,plan}); schedule();
-  try{await S.db.doc('programs/'+pid).update({plan})}catch(e){fail(e)}
 }
 function courseData(pid,name,sem,via,extra){
   const p=S.programs.get(pid);name=clean(name);
@@ -443,7 +428,7 @@ document.addEventListener('click',e=>{
   const pm=t.closest('[data-pmod]'); if(pm){S.pmod=pm.dataset.pmod;render();return}
   const pl=t.closest('[data-plvl]'); if(pl){S.plvl=pl.dataset.plvl;if(S.plvl==='escala'){const cur=S.programs.get(S.prog);if(!cur||!(cur.escala||cur.escalaOnly)){S.prog=escalaProgs()[0]?.id;S.sel.clear()}}else if(S.plvl!=='all'){const cur=S.programs.get(S.prog);if(!cur||cur.level!==S.plvl||cur.escalaOnly){S.prog=progsByLevel(S.plvl)[0]?.id;S.sel.clear()}}render();return}
   const pi=t.closest('[data-prog]'); if(pi){S.prog=pi.dataset.prog;S.sel.clear();S.editing=null;S.confirmDel=null;render();window.scrollTo(0,0);return}
-  const a=t.closest('[data-act]'); if(a){({import:openImport,autodates:openAutoDates,addsem:addSemester,hide:()=>toggleHidden(S.prog),escala:()=>{const pp=S.programs.get(S.prog);saveProg(S.prog,{escala:!pp.escala});toast(pp.escala?'Quitado de Escala Latam':'Añadido a Escala Latam')}})[a.dataset.act]();return}
+  const a=t.closest('[data-act]'); if(a){({import:openImport,addsem:addSemester,hide:()=>toggleHidden(S.prog),escala:()=>{const pp=S.programs.get(S.prog);saveProg(S.prog,{escala:!pp.escala});toast(pp.escala?'Quitado de Escala Latam':'Añadido a Escala Latam')}})[a.dataset.act]();return}
   const sh=t.closest('[data-show]'); if(sh){toggleHidden(sh.dataset.show);return}
   const sb=t.closest('[data-setst]'); if(sb){const id=sb.dataset.setst,v=sb.dataset.val;if(S.courses.get(id)?.status!==v)setField(tcSiblings(id),'status',v);return}
   if(t.closest('[data-edit]')){const id=t.closest('[data-edit]').dataset.edit;S.editing=id;S.editVal=S.courses.get(id).name;S.confirmDel=null;render();const el=document.getElementById('edit-name');el&&el.focus();return}
@@ -463,7 +448,6 @@ document.addEventListener('change',e=>{
   if(d.sel){t.checked?S.sel.add(d.sel):S.sel.delete(d.sel);S.confirmDel=null;render();return}
   if(d.selsem){const s=+d.selsem;coursesOf(S.prog).filter(c=>(c.semester||1)===s).forEach(c=>t.checked?S.sel.add(c.id):S.sel.delete(c.id));render();return}
   if(d.semvia&&t.value){const s=+d.semvia;const ids=coursesOf(S.prog).filter(c=>(c.semester||1)===s).map(c=>c.id);setField(ids,'via',t.value).then(()=>toast(`Vía aplicada a ${ids.length} asignaturas del semestre ${s}`));t.value='';t.blur();return}
-  if(d.date){savePlan(S.prog,d.sem,d.date,t.value);return}
   if(d.tcst&&t.value){const D=derive();const g=D.keys.get(d.tcst);if(g)setField(g.ids,'status',t.value);t.value='';t.blur();return}
   if(t.id==='bulk-via'&&t.value){const ids=[...S.sel];setField(ids,'via',t.value).then(()=>toast(`Vía actualizada en ${ids.length} asignaturas`));return}
   if(t.id==='bulk-st'&&t.value){const ids=[...S.sel];setField(ids,'status',t.value).then(()=>toast(`Estado actualizado en ${ids.length} asignaturas`));return}
@@ -471,7 +455,6 @@ document.addEventListener('change',e=>{
   if(t.id==='p-prod'||t.id==='p-class'||t.id==='p-nsem'){const f={'p-prod':'prodStart','p-class':'classStart','p-nsem':'semsToProduce'}[t.id];saveProg(S.prog,{[f]:f==='semsToProduce'?(Math.max(0,Math.min(14,+t.value||0))||null):t.value});return}
   if(d.ifield){const [pid,f]=d.ifield.split('|');saveProg(pid,{[f]:f==='semsToProduce'?(Math.max(0,Math.min(14,+t.value||0))||null):t.value});return}
   if(t.id==='p-via'){S.programs.set(S.prog,{...S.programs.get(S.prog),defaultVia:t.value});S.db.doc('programs/'+S.prog).update({defaultVia:t.value}).catch(fail);return}
-  if(t.id==='sync-tc'){S.syncTC=t.checked;return}
   if(t.id==='psel'){S.prog=t.value;S.sel.clear();render();return}
 });
 document.addEventListener('input',e=>{
@@ -496,29 +479,6 @@ function addSemester(){const p=S.programs.get(S.prog);const n=Math.min(12,Math.m
 function openModal(html){document.getElementById('modal-root').innerHTML=`<div class="modal-bg" data-bg><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
   const bg=document.querySelector('[data-bg]');bg.addEventListener('mousedown',e=>{if(e.target===bg)closeModal()})}
 function closeModal(){if(S.impAll&&S.impAll.busy)return;document.getElementById('modal-root').innerHTML='';S.imp=null;S.impAll=null}
-
-/* ---------- auto dates ---------- */
-function openAutoDates(){
-  const p=S.programs.get(S.prog);const sems=semestersOf(p);
-  if(!sems.length){toast('Primero indica el número de semestres o sube el plan de estudios');return}
-  const first=(p.plan||{})[sems[0]]?.start||iso(today());
-  openModal(`<div class="modal-h"><div><div class="eyebrow">Programar fechas</div><h2>${esc(p.name)}</h2></div><button class="btn ghost" data-close>Cerrar</button></div>
-  <div class="modal-b"><p class="muted" style="margin:0">Genera las fechas de inicio y fin de los ${sems.length} semestres. Puedes ajustarlas después una por una.</p>
-   <div class="cfg">
-    <label class="field">Inicio del primer semestre<input type="date" id="ad-start" value="${first}"></label>
-    <label class="field">Semanas de producción por semestre<input type="number" id="ad-weeks" min="1" max="52" value="4"></label>
-    <label class="field">Semanas entre semestres<input type="number" id="ad-gap" min="0" max="26" value="0"></label>
-    <label class="field">Modo<select id="ad-mode"><option value="seq">En cadena (uno tras otro)</option><option value="par">Todos en paralelo</option></select></label>
-   </div><div id="ad-prev" class="muted num" style="font-size:12px"></div></div>
-  <div class="modal-f"><button class="btn" data-close>Cancelar</button><button class="btn primary" id="ad-go">Aplicar fechas</button></div>`);
-  const calc=()=>{const s=pd(document.getElementById('ad-start').value);const w=+document.getElementById('ad-weeks').value||1;const g=+document.getElementById('ad-gap').value||0;const par=document.getElementById('ad-mode').value==='par';
-    if(!s)return null;const plan={};let cur=new Date(s);for(const n of sems){const a=par?new Date(s):new Date(cur);const b=new Date(+a+(w*7-1)*864e5);plan[n]={start:iso(a),end:iso(b)};cur=new Date(+b+(1+g*7)*864e5)}return plan};
-  const prev=()=>{const pl=calc();document.getElementById('ad-prev').innerHTML=pl?Object.entries(pl).map(([k,v])=>`S${k}: ${fmtD(v.start)} → ${fmtD(v.end)}`).join(' · '):''};
-  document.querySelector('.modal').addEventListener('input',prev);document.querySelector('.modal').addEventListener('change',prev);prev();
-  document.querySelectorAll('[data-close]').forEach(b=>b.onclick=closeModal);
-  document.getElementById('ad-go').onclick=async()=>{const pl=calc();if(!pl)return;const plan={...(p.plan||{}),...pl};S.programs.set(p.id,{...p,plan});closeModal();schedule();
-    try{await S.db.doc('programs/'+p.id).update({plan});toast('Fechas programadas')}catch(e){fail(e)}};
-}
 
 /* ---------- import ---------- */
 function openImport(){
@@ -765,20 +725,15 @@ async function exportXlsx(){
 function applyPC(pid,data){
   for(const [id,c] of S.courses)if(c.programId===pid)S.courses.delete(id);
   if(!data)return;
-  for(const [id,c] of Object.entries(data.courses||{})){if(!c||c.deleted||!c.name)continue;S.courses.set(id,{...c,id,programId:pid,semester:c.semester||1})}
+  for(const [id,c] of Object.entries(data.courses||{})){if(!c||c.deleted||!c.name)continue;S.courses.set(id,{...c,id,programId:pid,semester:+c.semester||1})}
 }
 
 /* ---------- boot ---------- */
-(async()=>{
-  const use=async n=>{try{return (await window.claude?.use?.(n))??null}catch(e){return null}};
-  const [db,dl]=await Promise.all([use('db'),use('downloads')]);
-  S.dl=dl;
-  S.db=db||null;
-  if(!db){render();return}
-  db.collection('programs').onSnapshot(snap=>{S.programs=new Map(snap.docs.map(d=>[d.id,{id:d.id,...d.data()}]));S.loaded.programs=true;schedule()},e=>{console.error(e);toast('Se perdió la conexión con los programas. Recarga la página.')});
-  db.collection('pc').onSnapshot(snap=>{for(const ch of snap.docChanges()){PC.add(ch.doc.id);applyPC(ch.doc.id,ch.type==='removed'?null:ch.doc.data())}S.loaded.courses=true;schedule()},e=>{console.error(e);toast('Se perdió la conexión con las asignaturas. Recarga la página.')});
-
-})();
-if(!window.claude){setTimeout(()=>{if(!S.db)render()},400)}
+S.dl=downloads||null;
+S.db=db||null;
+document.body.dataset.readonly=S.canWrite?'':'1';
+if(!db){render();return}
+db.collection('programs').onSnapshot(snap=>{S.programs=new Map(snap.docs.map(d=>[d.id,{id:d.id,...d.data()}]));S.loaded.programs=true;schedule()},e=>{console.error(e);toast('Se perdió la conexión con los programas. Recarga la página.')});
+db.collection('pc').onSnapshot(snap=>{for(const ch of snap.docChanges()){PC.add(ch.doc.id);applyPC(ch.doc.id,ch.type==='removed'?null:ch.doc.data())}S.loaded.courses=true;schedule()},e=>{console.error(e);toast('Se perdió la conexión con las asignaturas. Recarga la página.')});
 
 }

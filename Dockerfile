@@ -1,8 +1,8 @@
 # Imagen única: compila React y lo sirve desde la API .NET.
-FROM node:20-alpine AS web
+FROM node:22-alpine AS web
 WORKDIR /src/frontend
 COPY frontend/package*.json ./
-RUN npm ci || npm install
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -15,8 +15,11 @@ RUN dotnet publish backend/PlanVirtualizacion.Api/PlanVirtualizacion.Api.csproj 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 COPY --from=api /app ./
-ENV ASPNETCORE_URLS=http://+:8080
-# Los datos se guardan en /app/App_Data: monta un volumen para no perderlos.
-VOLUME ["/app/App_Data"]
+ENV ASPNETCORE_URLS=http://+:8080 \
+    Storage__DataDir=/data
+# Los datos (plan, usuarios, bitácora, claves) van en /data: monta un volumen para no perderlos.
+RUN mkdir -p /data && chown app:app /data
+VOLUME ["/data"]
+USER app
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "PlanVirtualizacion.Api.dll"]
