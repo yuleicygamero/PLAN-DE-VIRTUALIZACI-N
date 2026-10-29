@@ -1,0 +1,19 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+
+# Datos de la plataforma (se crean al ejecutar; no subir a GitHub)
+backend/PlanVirtualizacion.Api/App_Data/
+
+# Build de React (se genera con `npm run build`)
+backend/PlanVirtualizacion.Api/wwwroot/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Sistema
+.DS_Store
+Thumbs.db
