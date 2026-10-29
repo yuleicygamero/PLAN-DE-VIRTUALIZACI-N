@@ -4,16 +4,38 @@ Plataforma de seguimiento de la virtualización de asignaturas de la Dirección 
 
 - **Frontend:** React 18 + Vite (`frontend/`)
 - **Backend:** ASP.NET Core 8, API REST + SignalR para cambios en tiempo real (`backend/PlanVirtualizacion.Api/`)
-- **Datos:** archivo JSON en el servidor (`App_Data/plan-data.json`). La primera vez se crea con los datos iniciales de `Seed/seed.json` (los 87 programas y sus asignaturas exportados de la versión en Claude).
+- **Datos:** archivos JSON en la carpeta de datos (`Storage:DataDir`). La primera vez el plan se crea con `Seed/seed.json` (87 programas y sus asignaturas).
 
-## Requisitos
+## Usuarios y roles
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- [Node.js 20 o superior](https://nodejs.org/)
+La plataforma exige iniciar sesión. Hay tres roles:
+
+| Rol | Puede |
+|---|---|
+| `admin` | Todo lo del editor y administrar usuarios (botón **Usuarios**). |
+| `editor` | Consultar y modificar el plan. |
+| `lector` | Solo consultar. |
+
+**Primer ingreso:** si no existe ningún usuario, la API crea `admin` con una contraseña aleatoria y la guarda en `ADMIN-INICIAL.txt` dentro de la carpeta de datos (en el servidor: `sudo cat /var/lib/plan-virtualizacion/ADMIN-INICIAL.txt`). Al entrar pide cambiarla y el archivo se borra.
+
+Los usuarios nuevos y las contraseñas restablecidas reciben una contraseña temporal (se muestra una sola vez al administrador) que deben cambiar al entrar.
+
+## Seguridad
+
+- Contraseñas con hash PBKDF2-SHA512 (210.000 iteraciones); mínimo 12 caracteres.
+- Sesión en cookie `HttpOnly`, `Secure`, `SameSite=Strict`; expira tras 8 h sin uso y como máximo a las 12 h.
+- Al cambiar contraseña, rol o desactivar un usuario se cierran sus sesiones y su conexión en tiempo real al instante.
+- Protección CSRF con token en todas las peticiones que modifican datos.
+- Límite de 10 intentos de login cada 5 minutos por IP y bloqueo de 15 minutos tras 5 fallos por usuario. Límite general de 600 peticiones por minuto.
+- Validación estricta en el servidor de cada documento (campos, tipos, longitudes y valores permitidos): no se puede guardar HTML o código.
+- Cabeceras de seguridad: CSP, `X-Frame-Options: DENY`, `nosniff`, HSTS, `Referrer-Policy`, `Permissions-Policy`.
+- Bitácora de auditoría (`audit.log`): entradas, intentos fallidos y cada cambio de datos o usuarios, con usuario e IP.
+- Respaldo automático del plan cada hora (últimos 72) y antes de cada despliegue (últimos 20), en `backups/`.
+- En el servidor: servicio aislado con systemd, usuario sin privilegios, solo escucha en `127.0.0.1` y no puede escribir fuera de su carpeta de datos.
 
 ## Ejecutar en tu computador
 
-En dos terminales:
+Requisitos: [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) y [Node.js 22](https://nodejs.org/) (o 20.19+).
 
 ```bash
 # 1. API (http://localhost:5080)
@@ -28,55 +50,62 @@ npm install
 npm run dev
 ```
 
-Abre http://localhost:5173. Vite reenvía `/api` y `/hubs` a la API.
+Abre http://localhost:5173. Vite reenvía `/api` y `/hubs` a la API. La contraseña inicial de `admin` queda en `backend/PlanVirtualizacion.Api/App_Data/ADMIN-INICIAL.txt`.
 
-## Publicar en un servidor
+## Despliegue en el servidor (GitHub Actions)
 
-La forma más simple es un solo servicio .NET que sirve la app y los datos:
+Cada push a `main` ejecuta [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml): compila la interfaz y la API (.NET autocontenida, no hace falta instalar .NET en el servidor), copia el paquete por SSH y ejecuta [`deploy/instalar.sh`](deploy/instalar.sh). También se puede lanzar a mano desde la pestaña **Actions**.
 
-```bash
-cd frontend
-npm install
-npm run build          # deja la app compilada en backend/PlanVirtualizacion.Api/wwwroot
+Secretos del repositorio: `SSH_HOST`, `SSH_PORT`, `SSH_USER` (con `sudo` sin contraseña) y `SSH_PRIVATE_KEY`.
 
-cd ../backend/PlanVirtualizacion.Api
-dotnet publish -c Release -o ../../publish
-```
+En el servidor queda así:
 
-Copia la carpeta `publish` al servidor y ejecuta `dotnet PlanVirtualizacion.Api.dll`
-(en IIS: crea un sitio que apunte a esa carpeta con el Hosting Bundle de .NET 8 instalado).
-
-Con Docker:
-
-```bash
-docker build -t plan-virtualizacion .
-docker run -d -p 8080:8080 -v plan-datos:/app/App_Data plan-virtualizacion
-```
-
-### Configuración (`appsettings.json`)
-
-| Clave | Para qué sirve |
+| Ruta | Contenido |
 |---|---|
-| `Storage:DataFile` | Ruta del archivo de datos. Por defecto `App_Data/plan-data.json`. |
-| `Cors:Origins` | Dominios desde donde se puede llamar la API si el frontend se publica aparte. |
+| `/var/www/html/plan-virtualizacion` | Aplicación (solo lectura para el servicio). |
+| `/var/lib/plan-virtualizacion` | Datos, usuarios, bitácora, claves y respaldos (permisos 700, fuera de la web). |
+| `/etc/systemd/system/plan-virtualizacion.service` | Servicio (`sudo systemctl status plan-virtualizacion`). |
+| `/etc/nginx/snippets/plan-virtualizacion.conf` | Proxy de `/plan-virtualizacion/` hacia `127.0.0.1:5180`. |
 
-Si publicas el frontend en otro dominio, compílalo con `VITE_API_URL=https://tu-api.dominio npm run build`.
+El script agrega `include snippets/plan-virtualizacion.conf;` al `server{}` de Nginx que sirve `/var/www/html` (guarda copia en `/var/backups/plan-virtualizacion-nginx/` y la restaura si `nginx -t` falla). Si la nueva versión no responde, vuelve sola a la anterior.
+
+La plataforma queda en `https://<dominio>/plan-virtualizacion/`.
+
+Registros: `sudo journalctl -u plan-virtualizacion -f`. Bitácora: `sudo tail -f /var/lib/plan-virtualizacion/audit.log`.
 
 ## Respaldos
 
-Todo el plan está en `App_Data/plan-data.json`. Copia ese archivo para hacer un respaldo; para restaurar, detén la API, reemplázalo y vuelve a iniciarla.
+Para restaurar: `sudo systemctl stop plan-virtualizacion`, copia el respaldo elegido de `/var/lib/plan-virtualizacion/backups/` sobre `plan-data.json` (conservando el dueño `planvirt`) y `sudo systemctl start plan-virtualizacion`.
 
-## Seguridad
+## Docker
 
-La plataforma no tiene inicio de sesión: cualquiera que abra la dirección puede ver y editar. Si se publica en internet, protégela (por ejemplo con autenticación del servidor/IIS, una VPN o restringiendo IPs).
+```bash
+docker build -t plan-virtualizacion .
+docker run -d -p 8080:8080 -v plan-datos:/data plan-virtualizacion
+```
+
+Detrás de un proxy con HTTPS (la cookie de sesión exige HTTPS fuera del modo desarrollo).
+
+## Configuración
+
+| Clave | Para qué sirve |
+|---|---|
+| `Storage:DataDir` | Carpeta de datos. Por defecto `App_Data`. |
+| `PathBase` | Subruta pública, p. ej. `/plan-virtualizacion`. Vacío = raíz del dominio. |
+
+Al compilar la interfaz para una subruta: `VITE_BASE=/plan-virtualizacion/ npm run build`.
 
 ## API
 
-| Método | Ruta | Uso |
-|---|---|---|
-| GET | `/api/docs/{colección}` | Lista documentos (`programs`, `pc`) |
-| GET | `/api/docs/{colección}/{id}` | Lee un documento |
-| PUT | `/api/docs/{colección}/{id}` | Crea o reemplaza |
-| PATCH | `/api/docs/{colección}/{id}` | Actualiza con fusión profunda |
-| DELETE | `/api/docs/{colección}/{id}` | Borra |
-| — | `/hubs/changes` | SignalR: evento `changed` en cada modificación |
+Todas las rutas exigen sesión salvo `/api/auth/session`, `/api/auth/login` y `/api/health`. Las peticiones que modifican datos requieren la cabecera `X-XSRF-TOKEN`.
+
+| Método | Ruta | Uso | Rol |
+|---|---|---|---|
+| GET | `/api/auth/session` | Usuario actual y token CSRF | — |
+| POST | `/api/auth/login` · `/api/auth/logout` | Iniciar / cerrar sesión | — |
+| POST | `/api/auth/password` | Cambiar la propia contraseña | cualquiera |
+| GET | `/api/docs/{programs\|pc}` · `/api/docs/{colección}/{id}` | Leer | cualquiera |
+| PUT · PATCH | `/api/docs/{colección}/{id}` | Crear/reemplazar · fusión profunda | editor, admin |
+| DELETE | `/api/docs/{colección}/{id}` | Borrar | admin |
+| GET · POST · PATCH · DELETE | `/api/users[/{id}]` | Administrar usuarios | admin |
+| — | `/hubs/changes` | SignalR: evento `changed` en cada modificación | cualquiera |

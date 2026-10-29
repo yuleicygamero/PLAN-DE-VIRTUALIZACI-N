@@ -1,0 +1,21 @@
+/* Inicio de sesión, cambio de contraseña, usuarios y modo solo lectura */
+.auth-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px}
+.auth-card{width:min(420px,100%);display:flex;flex-direction:column;gap:16px;padding:28px;border-radius:22px;background:var(--glass);backdrop-filter:blur(22px) saturate(1.7);-webkit-backdrop-filter:blur(22px) saturate(1.7);border:1px solid var(--glass-line);box-shadow:0 10px 34px var(--glass-shadow),inset 0 1px 0 rgba(255,255,255,.35)}
+.auth-card .field{font-size:12px}
+.auth-card .field input{padding:10px 12px;font-size:14px;font-weight:500}
+.auth-card .btn{justify-content:center;padding:11px 14px}
+.auth-modal{align-items:flex-start}
+.auth-modal>.auth-card{margin-top:8vh;background:color-mix(in srgb,var(--bg) 88%,transparent)}
+.auth-error{color:var(--danger);font-size:13px;font-weight:600;background:color-mix(in srgb,var(--danger) 10%,transparent);padding:10px 12px;border-radius:12px}
+.auth-ok{display:flex;flex-direction:column;gap:10px;font-size:13px;background:var(--st-ok-bg);padding:12px 14px;border-radius:14px}
+.secret{font-family:ui-monospace,Consolas,monospace;font-size:16px;font-weight:700;letter-spacing:.04em;user-select:all;background:var(--raise);padding:8px 12px;border-radius:10px;align-self:flex-start}
+.user-menu{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.user-chip{display:flex;flex-direction:column;line-height:1.25;font-size:12.5px;padding-right:4px;max-width:180px}
+.user-chip b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-chip small{color:var(--muted);font-size:11px}
+.users-new{gap:12px}
+
+/* Solo lectura: se ocultan los controles de edición (el servidor igual rechaza cualquier cambio). */
+body[data-readonly="1"] :is(#import-all-btn,[data-act],[data-show],.rowact,.addrow,[data-tcst],[data-selsem],[data-sel],[data-semvia],.bulk){display:none!important}
+body[data-readonly="1"] .phead:has(#ib-prod){display:none}
+body[data-readonly="1"] :is(.stseg,select.via,#p-sems,#p-via,#p-prod,#p-class,#p-nsem,[data-ifield]){pointer-events:none}

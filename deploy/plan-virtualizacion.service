@@ -1,0 +1,52 @@
+# Servicio de la plataforma Plan de Virtualización 2026.
+# Lo instala deploy/instalar.sh en /etc/systemd/system/; no editar en el servidor.
+[Unit]
+Description=Plan de Virtualizacion 2026 (API .NET + interfaz)
+After=network.target
+
+[Service]
+Type=simple
+User=planvirt
+Group=planvirt
+WorkingDirectory=/var/www/html/plan-virtualizacion
+ExecStart=/var/www/html/plan-virtualizacion/PlanVirtualizacion.Api
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+Environment=ASPNETCORE_ENVIRONMENT=Production
+# Solo escucha en localhost: el único acceso desde fuera es a través de Nginx.
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5180
+Environment=PathBase=/plan-virtualizacion
+Environment=Storage__DataDir=/var/lib/plan-virtualizacion
+Environment=HOME=/var/lib/plan-virtualizacion
+Environment=DOTNET_NOLOGO=1
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_gcServer=0
+
+# Aislamiento: el proceso no puede escribir fuera de su carpeta de datos ni ganar privilegios.
+NoNewPrivileges=true
+UMask=0077
+ProtectSystem=strict
+ReadWritePaths=/var/lib/plan-virtualizacion
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

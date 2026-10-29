@@ -1,28 +1,22 @@
 /*
  * Cliente de datos: habla con la API .NET (/api/docs) y escucha cambios en tiempo
- * real por SignalR (/hubs/changes). Expone la misma forma que usa el motor de la
- * plataforma: db.collection(c).onSnapshot(...), db.doc('c/id').update(...), etc.
+ * real por SignalR (/hubs/changes), siempre con la sesión del usuario. Expone la misma
+ * forma que usa el motor de la plataforma: db.collection(c).onSnapshot(...),
+ * db.doc('c/id').update(...), etc.
  */
 import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr';
-
-const API = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+import { BASE, request } from './http.js';
 
 const err = (code, message) => Object.assign(new Error(message), { code, message });
 
+// Lecturas de un documento inexistente devuelven null en lugar de error.
 async function http(method, path, body) {
-  let res;
   try {
-    res = await fetch(`${API}/api/docs/${path}`, {
-      method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    return await request(method, `/api/docs/${path}`, body);
   } catch (e) {
-    throw err('unavailable', 'No hay conexión con el servidor');
+    if (e.code === 'not_found') return null;
+    throw e;
   }
-  if (res.status === 404) return null;
-  if (!res.ok) throw err(res.status === 400 ? 'invalid_argument' : 'unavailable', `Error ${res.status}`);
-  return res.status === 204 ? null : res.json();
 }
 
 /* ---------- tiempo real ---------- */
@@ -31,7 +25,7 @@ let hub = null;
 function ensureHub() {
   if (hub) return;
   hub = new HubConnectionBuilder()
-    .withUrl(`${API}/hubs/changes`)
+    .withUrl(`${BASE}/hubs/changes`)
     .withAutomaticReconnect()
     .configureLogging(LogLevel.Warning)
     .build();
@@ -39,6 +33,8 @@ function ensureHub() {
     const set = colListeners.get(ev.collection);
     if (set) set.forEach((fn) => fn(ev));
   });
+  // Si el servidor corta la conexión (sesión revocada) y no logra reconectar, se revisa la sesión.
+  hub.onclose(() => window.dispatchEvent(new Event('pv:unauthorized')));
   hub.onreconnected(() => {
     // tras una desconexión, recarga cada colección para no perder cambios
     colListeners.forEach((set) => set.forEach((fn) => fn({ resync: true })));

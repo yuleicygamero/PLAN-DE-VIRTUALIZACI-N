@@ -17,3 +17,7 @@ frontend/dist/
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Paquete de despliegue
+publish/
+*.tgz
